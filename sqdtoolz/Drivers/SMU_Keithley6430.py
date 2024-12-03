@@ -3,6 +3,7 @@
 # https://github.com/qdev-dk/qtlab/blob/master/instrument_plugins/Keithley_6430.py
 from typing import List, Tuple
 
+from qcodes import validators as vals
 from qcodes.instrument.visa import VisaInstrument
 from qcodes.utils.validators import Ints, Numbers, Bool, Strings, Enum
 from qcodes.utils.helpers import create_on_off_val_mapping
@@ -159,12 +160,16 @@ class Keithley_6430(VisaInstrument):
         self.add_parameter('sense_mode',
                            set_cmd=self._set_sense_mode,
                            get_cmd=self._get_sense_mode,
-                           vals=Strings(),
+                           val_mapping={'SrcV_MeasI' : 'CURR:DC', 'SrcI_MeasV' : 'VOLT:DC'},
                            docstring="Sensing mode."
                                      "Set to 'VOLT:DC', "
                                      "'CURR:DC', or 'RES', or a combination "
                                      "thereof by using comma.",
+        
+        
                            )
+
+
         self.add_parameter('sense_autorange',
                            set_cmd=self._set_sense_autorange,
                            get_cmd=self._get_sense_autorange,
@@ -300,6 +305,23 @@ class Keithley_6430(VisaInstrument):
                                      " in the moving average filter.",
                            )
 
+        self.add_parameter('voltage_ramp_rate', unit='V/s',
+                            label="Output voltage ramp-rate",
+                            initial_value=2.5e-3/0.05,
+                            vals=vals.Numbers(0.001, 100),
+                            get_cmd=lambda : self.source_voltage.step/self.source_voltage.inter_delay,
+                            set_cmd=self._set_ramp_rate_volt)
+
+        self.add_parameter('current_ramp_rate', unit='A/s',
+                            label="Output current ramp-rate",
+                            initial_value=0.001,
+                            vals=vals.Numbers(0.001, 100),
+                            get_cmd=lambda : self.source_current.step/self.source_current.inter_delay,
+                            set_cmd=self._set_ramp_rate_current)
+
+        self.Mode = 'SrcI_MeasV'
+        self.output_auto_off_enabled(False)
+
         self.connect_message()
 
         if reset:
@@ -341,10 +363,10 @@ class Keithley_6430(VisaInstrument):
             Measured value of the requested quantity.
         """
         mode_now = self.sense_mode()
-        if quantity not in mode_now:
-            warnings.warn(f"{self.short_name} tried reading {quantity}, but "
-                          f"mode is set to {mode_now}. Value might be out of "
-                          f"date.")
+        # if quantity not in mode_now:
+        #     warnings.warn(f"{self.short_name} tried reading {quantity}, but "
+        #                   f"mode is set to {mode_now}. Value might be out of "
+        #                   f"date.")
         mapping = {"VOLT:DC": 0, "CURR:DC": 1, "RES": 2}
         return self.read()[mapping[quantity]]
 
@@ -415,7 +437,122 @@ class Keithley_6430(VisaInstrument):
         reply2 = bool(int(self.ask('SENS:RES:RANG:AUTO?')))
         return reply0 and reply1 and reply2
     
+    def _set_ramp_rate_volt(self, ramp_rate):
+        if ramp_rate < 0.01:
+            self.source_voltage.step = 0.001
+        elif ramp_rate < 0.1:
+            self.source_voltage.step = 0.010
+        elif ramp_rate < 1.0:
+            self.source_voltage.step = 0.100
+        else:
+            self.source_voltage.step = 1.0
+        self.source_voltage.inter_delay = self.source_voltage.step / ramp_rate
+
+    def _set_ramp_rate_current(self, ramp_rate):
+        if ramp_rate < 0.01:
+            self.source_current.step = 0.001
+        elif ramp_rate < 0.1:
+            self.source_current.step = 0.010
+        elif ramp_rate < 1.0:
+            self.source_current.step = 0.100
+        else:
+            self.source_current.step = 1.0
+        self.source_current.inter_delay = self.source_current.step / ramp_rate
+
+
+    @property
+    def Mode(self):
+        return self.sense_mode()
+    @Mode.setter
+    def Mode(self, mode):
+        if mode == 'SrcV_MeasI':
+            self.source_mode('VOLT')
+        elif mode == 'SrcI_MeasV':
+            self.source_mode('CURR')
+        self.sense_mode(mode)
+
+    @property
+    def SupportsSweeping(self):
+        return False
+
+    @property
+    def Voltage(self):
+        return self.source_voltage()
+    @Voltage.setter
+    def Voltage(self, val):
+        assert self.Mode == 'SrcV_MeasI', 'Cannot set voltage in Current source mode'
+        self.source_voltage(val)
+
+    @property
+    def RampRateVoltage(self):
+        return self.voltage_ramp_rate()
+    @RampRateVoltage.setter
+    def RampRateVoltage(self, val):
+        self.voltage_ramp_rate(val)
+
+    @property
+    def Current(self):
+        return self.source_current()
+    @Current.setter
+    def Current(self, val):
+        assert self.Mode == 'SrcI_MeasV', 'Cannot set Current in Voltage source mode'
+        self.source_current(val)
+
+    @property
+    def RampRateCurrent(self):
+        return self.current_ramp_rate()
+    @RampRateCurrent.setter
+    def RampRateCurrent(self, val):
+        self.current_ramp_rate(val)
+
+    @property
+    def SenseVoltage(self):
+        if self.Output:
+            return self.sense_voltage()
+        else:
+            return 0
+
+    @property
+    def SenseCurrent(self):
+        if self.Output:
+            return self.sense_current()
+        else:
+            return 0
+
+    @property
+    def ComplianceCurrent(self):
+        return self.source_current_compliance()
+    @ComplianceCurrent.setter
+    def ComplianceCurrent(self, val):
+        self.source_current_compliance(val)
+    
+    @property
+    def ComplianceVoltage(self):
+        return self.source_voltage_compliance()
+    @ComplianceVoltage.setter
+    def ComplianceVoltage(self, val):
+        self.source_voltage_compliance(val)
+
+    @property
+    def Output(self):
+        return self.output_enabled()
+    @Output.setter
+    def Output(self, val):
+        self.output_enabled(val)
+
+    @property
+    def ProbeType(self):
+        # if CHECK:
+        #    return 'TwoWire'
+        #else:
+        return 'FourWire'
+    
+    @ProbeType.setter
+    def ProbeType(self, connection):
+        #assert connection == 'TwoWire' or connection == 'FourWire', "ProbeType must be FourWire or TwoWire"
+        #assert False, "IMPLEMENT THIS!"
+        return
 
 if __name__ == '__main__':
-    test = Keithley_6430('bob', 'GPIB::24::INSTR')   #COM port address for the 
+    test = Keithley_6430('bob', 'GPIB0::24::INSTR')   #COM port address for the 
     a=0

@@ -1,0 +1,4 @@
+instruments:
+  smu:
+    type: sqdtoolz.Drivers.SMU_Keithley6430.Keithley_6430
+    address: 'GPIB0::24::INSTR'
